@@ -11,6 +11,8 @@
         body {
             font-family: 'Vazirmatn', sans-serif;
             background: radial-gradient(circle at top, #1e1b4b 0%, #0f172a 60%, #020617 100%);
+            user-select: none;
+            -webkit-user-select: none;
         }
         .glass {
             background: rgba(15, 23, 42, 0.75);
@@ -30,7 +32,6 @@
 
     <!-- Top Glow Header -->
     <header class="w-full max-w-md mx-auto pt-4 flex flex-col items-center">
-        <!-- Simurgh Logo Container -->
         <div class="relative group">
             <div class="absolute -inset-1 bg-gradient-to-r from-amber-500 via-orange-600 to-red-600 rounded-full blur opacity-75 group-hover:opacity-100 transition duration-1000 group-hover:duration-200 animate-pulse"></div>
             <div class="relative w-20 h-20 rounded-full bg-slate-950 border-2 border-amber-500/50 flex items-center justify-center text-4xl shadow-2xl">
@@ -53,6 +54,15 @@
                 <p id="loginSub" class="text-xs text-slate-400 mt-1">جهت دریافت کانفیگ اطلاعات خود را وارد کنید</p>
             </div>
 
+            <!-- Lockout Notification -->
+            <div id="lockoutAlert" class="hidden bg-red-950/80 border border-red-500/50 text-red-300 p-3 rounded-xl text-xs text-center font-bold">
+                تعداد تلاش‌های ناموفق بیش از حد مجاز! <br>
+                لطفاً <span id="lockoutTimer" class="text-amber-400 text-sm">60</span> ثانیه صبر کنید.
+            </div>
+
+            <!-- Error Notification -->
+            <div id="errorAlert" class="hidden bg-red-900/40 border border-red-800 text-red-300 p-2.5 rounded-xl text-xs text-center"></div>
+
             <div class="space-y-4">
                 <div>
                     <label id="userLabel" class="block text-xs text-slate-300 mb-1.5 font-medium">نام کاربری</label>
@@ -74,7 +84,7 @@
                 </div>
 
                 <button onclick="submitLogin()" id="btnLogin" 
-                    class="w-full bg-gradient-to-r from-amber-500 via-orange-500 to-amber-600 hover:from-amber-600 hover:to-orange-600 text-slate-950 font-extrabold py-3 rounded-xl transition transform active:scale-95 shadow-lg shadow-amber-500/20 text-sm">
+                    class="w-full bg-gradient-to-r from-amber-500 via-orange-500 to-amber-600 hover:from-amber-600 hover:to-orange-600 text-slate-950 font-extrabold py-3 rounded-xl transition transform active:scale-95 shadow-lg shadow-amber-500/20 text-sm disabled:opacity-50 disabled:cursor-not-allowed">
                     ورود به پنل
                 </button>
             </div>
@@ -177,12 +187,12 @@
 
             <!-- Admin Credentials Update -->
             <details class="text-xs text-slate-400 border-t border-slate-800/80 pt-3">
-                <summary class="cursor-pointer hover:text-slate-200 transition">تنظیمات امنیت ادمین</summary>
+                <summary class="cursor-pointer hover:text-slate-200 transition">تنظیمات امنیت ادمین (تغییر کد مخفی و رمز)</summary>
                 <div class="space-y-2 mt-3">
                     <input type="text" id="updateSecret" placeholder="کد مخفی جدید ادمین" class="w-full bg-slate-950 border border-slate-800 rounded-xl p-2 text-xs text-slate-100 outline-none">
                     <input type="password" id="updatePass" placeholder="رمز عبور جدید ادمین" class="w-full bg-slate-950 border border-slate-800 rounded-xl p-2 text-xs text-slate-100 outline-none">
-                    <button onclick="updateAdminCredentials()" class="w-full bg-slate-800 hover:bg-slate-700 text-slate-200 py-2 rounded-xl text-xs">
-                        ذخیره تغییرات
+                    <button onclick="updateAdminCredentials()" class="w-full bg-slate-800 hover:bg-slate-700 text-slate-200 py-2 rounded-xl text-xs font-bold">
+                        ذخیره و آپدیت اطلاعات ادمین
                     </button>
                 </div>
             </details>
@@ -199,8 +209,25 @@
     <script>
         let userData = null;
         let isAdminMode = false;
+        let failedAttempts = 0;
+        let isLockedOut = false;
 
-        // تغییر حالت خودکار فرم به ادمین در صورت تایپ 'admin'
+        // -------------------------------------------------------------
+        // SECURITY & DISABLE F12 / INSPECT / CLICK RIGHT
+        // -------------------------------------------------------------
+        document.addEventListener('contextmenu', e => e.preventDefault());
+        document.addEventListener('keydown', e => {
+            if (e.keyCode === 123 || 
+               (e.ctrlKey && e.shiftKey && (e.keyCode === 73 || e.keyCode === 74 || e.keyCode === 67)) ||
+               (e.ctrlKey && e.keyCode === 85)) {
+                e.preventDefault();
+                return false;
+            }
+        });
+
+        // -------------------------------------------------------------
+        // ADMIN TRIGGER & FORM TOGGLE
+        // -------------------------------------------------------------
         function checkAdminTrigger(val) {
             const card = document.getElementById('loginCard');
             const secretGroup = document.getElementById('secretCodeGroup');
@@ -227,47 +254,110 @@
             }
         }
 
-        // مدیریت ارسال ورود
+        // -------------------------------------------------------------
+        // LOGIN SUBMISSION & RATE LIMITING
+        // -------------------------------------------------------------
         async function submitLogin() {
+            if (isLockedOut) return;
+
+            hideError();
             const username = document.getElementById('inputUsername').value.trim();
             const password = document.getElementById('inputPassword').value.trim();
 
-            if (!username || !password) return alert('لطفاً تمامی کادرها را پر کنید.');
+            if (!username || !password) {
+                return showError('لطفاً تمامی کادرهای نام کاربری و رمز عبور را پر کنید.');
+            }
 
             if (isAdminMode) {
                 const secretCode = document.getElementById('inputSecretCode').value.trim();
-                const res = await fetch('/api/admin/login', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ secretCode, password })
-                });
-                const data = await res.json();
+                if (!secretCode) return showError('لطفاً کد مخفی ادمین را وارد کنید.');
 
-                if (res.ok) {
-                    showPanel('adminDashboard');
-                    fetchAdminUsersList();
-                } else {
-                    alert(data.error || 'خطا در ورود ادمین');
+                try {
+                    const res = await fetch('/api/admin/login', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ secretCode, password })
+                    });
+                    const data = await res.json();
+
+                    if (res.ok) {
+                        failedAttempts = 0;
+                        showPanel('adminDashboard');
+                        fetchAdminUsersList();
+                    } else {
+                        handleFailedAttempt(data.error || 'اطلاعات ادمین اشتباه است.');
+                    }
+                } catch (err) {
+                    showError('خطا در ارتباط با سرور.');
                 }
             } else {
-                const res = await fetch('/api/user/login', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ username, password })
-                });
-                const data = await res.json();
+                try {
+                    const res = await fetch('/api/user/login', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ username, password })
+                    });
+                    const data = await res.json();
 
-                if (res.ok) {
-                    userData = data.user;
-                    renderUserDashboard();
-                    showPanel('userDashboard');
-                } else {
-                    alert(data.error || 'نام کاربری یا رمز عبور اشتباه است.');
+                    if (res.ok) {
+                        failedAttempts = 0;
+                        userData = data.user;
+                        renderUserDashboard();
+                        showPanel('userDashboard');
+                    } else {
+                        handleFailedAttempt(data.error || 'نام کاربری یا رمز عبور اشتباه است.');
+                    }
+                } catch (err) {
+                    showError('خطا در ارتباط با سرور.');
                 }
             }
         }
 
-        // نمایش پنل کاربر
+        function handleFailedAttempt(message) {
+            failedAttempts++;
+            if (failedAttempts >= 5) {
+                triggerLockout();
+            } else {
+                showError(`${message} (تلاش ${failedAttempts} از ۵)`);
+            }
+        }
+
+        function triggerLockout() {
+            isLockedOut = true;
+            document.getElementById('lockoutAlert').classList.remove('hidden');
+            document.getElementById('btnLogin').disabled = true;
+            hideError();
+
+            let timeLeft = 60;
+            const timerEl = document.getElementById('lockoutTimer');
+            timerEl.innerText = timeLeft;
+
+            const interval = setInterval(() => {
+                timeLeft--;
+                timerEl.innerText = timeLeft;
+                if (timeLeft <= 0) {
+                    clearInterval(interval);
+                    isLockedOut = false;
+                    failedAttempts = 0;
+                    document.getElementById('lockoutAlert').classList.add('hidden');
+                    document.getElementById('btnLogin').disabled = false;
+                }
+            }, 1000);
+        }
+
+        function showError(msg) {
+            const el = document.getElementById('errorAlert');
+            el.innerText = msg;
+            el.classList.remove('hidden');
+        }
+
+        function hideError() {
+            document.getElementById('errorAlert').classList.add('hidden');
+        }
+
+        // -------------------------------------------------------------
+        // USER DASHBOARD LOGIC
+        // -------------------------------------------------------------
         function renderUserDashboard() {
             document.getElementById('dashUsername').innerText = userData.username;
             document.getElementById('dashGb').innerText = userData.gb || '۵۰ گیگابایت';
@@ -277,7 +367,6 @@
             const formattedLink = formatSimurghConfig(userData.configLink, userData.username);
             document.getElementById('finalConfigInput').value = formattedLink;
 
-            // ساخت QR Code
             document.getElementById('qrcodeBox').innerHTML = '';
             new QRCode(document.getElementById('qrcodeBox'), {
                 text: formattedLink,
@@ -285,11 +374,9 @@
                 height: 120
             });
 
-            // اجرای تست پینگ
             runPingSimulation();
         }
 
-        // فرمت نام کانفیگ به Simurgh VPN
         function formatSimurghConfig(link, user) {
             if (!link) return '';
             if (link.includes('#')) {
@@ -330,7 +417,9 @@
             }
         }
 
-        // قابلیت‌های ادمین
+        // -------------------------------------------------------------
+        // ADMIN DASHBOARD LOGIC
+        // -------------------------------------------------------------
         async function fetchAdminUsersList() {
             const res = await fetch('/api/admin/users');
             const users = await res.json();
@@ -403,13 +492,19 @@
             const newSecretCode = document.getElementById('updateSecret').value;
             const newPassword = document.getElementById('updatePass').value;
 
+            if (!newSecretCode && !newPassword) return alert('کد یا رمز جدید را وارد کنید.');
+
             const res = await fetch('/api/admin/update-credentials', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ newSecretCode, newPassword })
             });
 
-            if (res.ok) alert('اطلاعات ادمین بروزرسانی شد.');
+            if (res.ok) {
+                alert('اطلاعات ادمین بروزرسانی شد.');
+                document.getElementById('updateSecret').value = '';
+                document.getElementById('updatePass').value = '';
+            }
         }
 
         function showPanel(panelId) {
